@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -71,11 +72,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "donow_list_tasks",
-        description: "Liệt kê các công việc từ workspace DoNow. Có thể lọc theo dự án hoặc trạng thái.",
+        description: "List tasks from DoNow workspace. Can filter by project or status.",
         inputSchema: {
           type: "object",
           properties: {
-            projectId: { type: "string", description: "ID của dự án" },
+            projectId: { type: "string", description: "Project ID" },
             status: { type: "string", enum: ["todo", "doing", "blocked", "done"] },
             completed: { type: "boolean" },
             tags: { type: "array", items: { type: "string" } },
@@ -84,7 +85,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_create_task",
-        description: "Tạo một công việc mới trong DoNow.",
+        description: "Create a new task in DoNow.",
         inputSchema: {
           type: "object",
           properties: {
@@ -94,7 +95,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 title: { type: "string" },
                 priority: { type: "string", enum: ["low", "medium", "high"] },
                 dueDate: { type: "string", description: "YYYY-MM-DD" },
-                notes: { type: "string", description: "Mô tả chi tiết hoặc ghi chú về công việc (Bắt buộc)." },
+                notes: { type: "string", description: "Detailed description or notes about the task (Required)." },
                 tags: { type: "array", items: { type: "string" } },
               },
               required: ["title", "notes"],
@@ -112,7 +113,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_bulk_create_tasks",
-        description: "Tạo nhiều công việc cùng lúc trong DoNow.",
+        description: "Create multiple tasks at once in DoNow.",
         inputSchema: {
           type: "object",
           properties: {
@@ -124,7 +125,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                   title: { type: "string" },
                   priority: { type: "string", enum: ["low", "medium", "high"] },
                   dueDate: { type: "string" },
-                  notes: { type: "string", description: "Mô tả chi tiết hoặc ghi chú về công việc (Bắt buộc)." },
+                  notes: { type: "string", description: "Detailed description or notes about the task (Required)." },
                   tags: { type: "array", items: { type: "string" } },
                 },
                 required: ["title", "notes"],
@@ -144,7 +145,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_upsert_task",
-        description: "Tạo mới hoặc cập nhật công việc dựa trên externalId hoặc tiêu đề.",
+        description: "Create or update a task based on externalId or title.",
         inputSchema: {
           type: "object",
           properties: {
@@ -156,7 +157,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_update_task",
-        description: "Cập nhật trạng thái hoặc chi tiết của một công việc đã có.",
+        description: "Update the status or details of an existing task.",
         inputSchema: {
           type: "object",
           properties: {
@@ -168,7 +169,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_complete_task",
-        description: "Đánh dấu công việc là hoàn thành kèm theo tóm tắt xác minh.",
+        description: "Mark a task as completed along with a verification summary.",
         inputSchema: {
           type: "object",
           properties: {
@@ -181,7 +182,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_get_projects",
-        description: "Lấy danh sách tất cả các dự án trong workspace.",
+        description: "Get a list of all projects in the workspace.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -189,7 +190,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_add_subtask",
-        description: "Thêm một bước nhỏ (subtask) vào công việc.",
+        description: "Add a subtask to a task.",
         inputSchema: {
           type: "object",
           properties: {
@@ -201,7 +202,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "donow_get_guidelines",
-        description: "Lấy hướng dẫn chi tiết về cách điền các trường dữ liệu (fields) chuẩn mực khi tạo hoặc cập nhật task.",
+        description: "Get detailed guidelines on how to properly fill data fields when creating or updating a task.",
         inputSchema: {
           type: "object",
           properties: {},
@@ -222,39 +223,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return {
         content: [{
           type: "text",
-          text: `HƯỚNG DẪN ĐIỀN CÁC TRƯỜNG DỮ LIỆU TRONG DONOW:
+          text: `DONOW DATA FIELD GUIDELINES:
             
-1. title (Tiêu đề):
-   - Phải ngắn gọn, rõ ràng và có tính hành động (bắt đầu bằng động từ).
-   - Ví dụ: "Cập nhật tài liệu API", "Sửa lỗi đăng nhập".
+1. title:
+   - Must be concise, clear, and actionable (start with a verb).
+   - Example: "Update API documentation", "Fix login bug".
    
-2. notes (Mô tả):
-   - ĐÂY LÀ TRƯỜNG BẮT BUỘC.
-   - Phải cung cấp đầy đủ ngữ cảnh, yêu cầu chi tiết, và kết quả mong muốn.
-   - Nếu có nhiều bước nhỏ, hãy liệt kê bằng gạch đầu dòng để người đọc dễ theo dõi.
+2. notes (Description):
+   - THIS IS A REQUIRED FIELD.
+   - Must provide full context, detailed requirements, and expected outcomes.
+   - If there are multiple small steps, list them with bullet points for readability.
 
-3. priority (Độ ưu tiên):
-   - "high": Cần xử lý gấp, ảnh hưởng lớn đến tiến độ.
-   - "medium": Mặc định cho hầu hết công việc.
-   - "low": Việc rảnh rỗi, chưa cần thiết ngay.
+3. priority:
+   - "high": Urgent, significantly impacts schedule.
+   - "medium": Default for most tasks.
+   - "low": Spare time work, not immediately necessary.
 
-4. tags (Nhãn):
-   - Dùng để phân loại. Nên dùng tiếng Anh, viết thường, ngăn cách bằng dấu gạch ngang.
-   - Ví dụ phổ biến: bug, feature, docs, research, design, frontend, backend.
+4. tags:
+   - Used for categorization. Use English, lowercase, separated by hyphens.
+   - Common examples: bug, feature, docs, research, design, frontend, backend.
 
-5. dueDate (Ngày đến hạn):
-   - Phải đúng định dạng YYYY-MM-DD.
-   - Chỉ điền nếu người dùng có đề cập đến thời gian cụ thể.
+5. dueDate:
+   - Must be in YYYY-MM-DD format.
+   - Only fill if the user specifically mentions a deadline.
 
-6. status (Trạng thái):
-   - "todo" (Mặc định): Sẽ làm.
-   - "doing": Đang làm.
-   - "blocked": Đang bị kẹt, chờ người khác hoặc chờ tài nguyên.
-   - "done": Đã xong.
+6. status:
+   - "todo" (Default): To be done.
+   - "doing": Currently in progress.
+   - "blocked": Stuck, waiting for someone or resources.
+   - "done": Completed.
 
-7. projectId / project.name (Dự án):
-   - Phân bổ đúng vào dự án mà người dùng chỉ định.
-   - Nếu người dùng KHÔNG chỉ định, TUYỆT ĐỐI không tự tạo dự án mới, hãy để trống để task rơi vào Inbox.`
+7. projectId / project.name (Project):
+   - Assign to the exact project specified by the user.
+   - If the user does NOT specify, ABSOLUTELY DO NOT create a new project. Leave it empty so the task falls into the Inbox.`
         }]
       };
     }
