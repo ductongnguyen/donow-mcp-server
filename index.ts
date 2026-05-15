@@ -416,6 +416,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "donow_delete_task",
+        description: "Permanently delete a task from DoNow. This action is irreversible.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            taskId: { type: "string", description: "The ID of the task to delete." },
+          },
+          required: ["taskId"],
+        },
+      },
+      {
         name: "donow_get_guidelines",
         description: "Get detailed guidelines on how to properly fill data fields when creating or updating a task.",
         inputSchema: {
@@ -538,6 +549,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
    - To put a task in the global Inbox instead, pass projectId: "" (empty string) explicitly.`
         }]
       };
+    }
+
+    if (name === "donow_delete_task") {
+      const taskId = (args as any)?.taskId;
+      if (!taskId) throw new Error("taskId is required.");
+      const result = await callDoNowApi("donow_delete_task", { taskId });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
     const finalArgs = PROJECT_SCOPED_ACTIONS.has(name) ? withProjectContext(args) : args;
