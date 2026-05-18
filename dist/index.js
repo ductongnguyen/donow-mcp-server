@@ -204,23 +204,31 @@ const server = new Server({
  * Helper to call the DoNow Next.js API
  */
 async function callDoNowApi(action, data = {}) {
-    const response = await fetch(DONOW_API_URL, {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${DONOW_API_KEY}`,
-        },
-        body: JSON.stringify({
-            action,
-            userId: DONOW_USER_ID,
-            ...data,
-        }),
-    });
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`DoNow API error (${response.status}): ${errorText}`);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    try {
+        const response = await fetch(DONOW_API_URL, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${DONOW_API_KEY}`,
+            },
+            body: JSON.stringify({
+                action,
+                userId: DONOW_USER_ID,
+                ...data,
+            }),
+            signal: controller.signal,
+        });
+        if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`DoNow API error (${response.status}): ${errorText}`);
+        }
+        return await response.json();
     }
-    return await response.json();
+    finally {
+        clearTimeout(timeoutId);
+    }
 }
 /**
  * List available tools
@@ -378,6 +386,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 },
             },
             {
+                name: "donow_delete_task",
+                description: "Permanently delete a task from DoNow. This action is irreversible.",
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        taskId: { type: "string", description: "The ID of the task to delete." },
+                    },
+                    required: ["taskId"],
+                },
+            },
+            {
                 name: "donow_get_guidelines",
                 description: "Get detailed guidelines on how to properly fill data fields when creating or updating a task.",
                 inputSchema: {
@@ -492,6 +511,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                     }]
             };
         }
+        if (name === "donow_delete_task") {
+            const taskId = args?.taskId;
+            if (!taskId)
+                throw new Error("taskId is required.");
+            const result = await callDoNowApi("donow_delete_task", { taskId });
+            return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+        }
         const finalArgs = PROJECT_SCOPED_ACTIONS.has(name) ? withProjectContext(args) : args;
         const result = await callDoNowApi(name, finalArgs);
         return {
@@ -515,10 +541,79 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
     }
 });
+async function autoGenerateMarkerIfNeeded() {
+    if (!CURRENT_PROJECT)
+        return;
+    if (CURRENT_PROJECT.markerPath)
+        return; // Already has a marker file!
+    if (!DONOW_API_KEY || !DONOW_USER_ID) {
+        // Local-only fallback if no keys are provided
+        try {
+            const path = writeMarker(CURRENT_PROJECT.repoPath, {
+                externalId: CURRENT_PROJECT.externalId,
+                name: CURRENT_PROJECT.name,
+            });
+            CURRENT_PROJECT.markerPath = path;
+            CURRENT_PROJECT.source = "marker";
+            console.error(`DoNow MCP: Auto-generated local marker at ${path} (no API keys, projectId omitted)`);
+        }
+        catch (e) {
+            console.error("DoNow MCP: Failed to auto-generate local marker file:", e);
+        }
+        return;
+    }
+    try {
+        console.error("DoNow MCP: No project.json found. Auto-generating project on backend...");
+        const result = await callDoNowApi("donow_find_or_create_project", {
+            project: {
+                name: CURRENT_PROJECT.name,
+                externalId: CURRENT_PROJECT.externalId,
+                repoPath: CURRENT_PROJECT.repoPath,
+                branch: CURRENT_PROJECT.branch,
+                source: "mcp",
+            },
+        });
+        const project = result?.project || {};
+        const projectId = project.id;
+        const projectName = project.name || CURRENT_PROJECT.name;
+        const externalId = project.externalId || CURRENT_PROJECT.externalId;
+        if (projectId) {
+            const path = writeMarker(CURRENT_PROJECT.repoPath, {
+                projectId,
+                externalId,
+                name: projectName,
+            });
+            // Refresh CURRENT_PROJECT details
+            CURRENT_PROJECT.projectId = projectId;
+            CURRENT_PROJECT.name = projectName;
+            CURRENT_PROJECT.externalId = externalId;
+            CURRENT_PROJECT.markerPath = path;
+            CURRENT_PROJECT.source = "marker";
+            console.error(`DoNow MCP: Successfully auto-generated project marker at ${path} (projectId=${projectId})`);
+        }
+    }
+    catch (error) {
+        console.error("DoNow MCP: Failed to auto-generate project marker via API:", error);
+        // Fallback to local-only generation
+        try {
+            const path = writeMarker(CURRENT_PROJECT.repoPath, {
+                externalId: CURRENT_PROJECT.externalId,
+                name: CURRENT_PROJECT.name,
+            });
+            CURRENT_PROJECT.markerPath = path;
+            CURRENT_PROJECT.source = "marker";
+            console.error(`DoNow MCP: Auto-generated local fallback marker at ${path}`);
+        }
+        catch (e) {
+            console.error("DoNow MCP: Failed to auto-generate local fallback marker file:", e);
+        }
+    }
+}
 /**
  * Start the server using stdio transport
  */
 async function main() {
+    await autoGenerateMarkerIfNeeded();
     const transport = new StdioServerTransport();
     await server.connect(transport);
     console.error("DoNow MCP Server running on stdio");

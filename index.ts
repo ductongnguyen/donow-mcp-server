@@ -239,25 +239,33 @@ const server = new Server(
  * Helper to call the DoNow Next.js API
  */
 async function callDoNowApi(action: string, data: any = {}) {
-  const response = await fetch(DONOW_API_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${DONOW_API_KEY}`,
-    },
-    body: JSON.stringify({
-      action,
-      userId: DONOW_USER_ID,
-      ...data,
-    }),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`DoNow API error (${response.status}): ${errorText}`);
+  try {
+    const response = await fetch(DONOW_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${DONOW_API_KEY}`,
+      },
+      body: JSON.stringify({
+        action,
+        userId: DONOW_USER_ID,
+        ...data,
+      }),
+      signal: controller.signal as any,
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`DoNow API error (${response.status}): ${errorText}`);
+    }
+
+    return await response.json();
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return await response.json();
 }
 
 /**
@@ -581,10 +589,80 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+async function autoGenerateMarkerIfNeeded() {
+  if (!CURRENT_PROJECT) return;
+  if (CURRENT_PROJECT.markerPath) return; // Already has a marker file!
+
+  if (!DONOW_API_KEY || !DONOW_USER_ID) {
+    // Local-only fallback if no keys are provided
+    try {
+      const path = writeMarker(CURRENT_PROJECT.repoPath, {
+        externalId: CURRENT_PROJECT.externalId,
+        name: CURRENT_PROJECT.name,
+      });
+      CURRENT_PROJECT.markerPath = path;
+      CURRENT_PROJECT.source = "marker";
+      console.error(`DoNow MCP: Auto-generated local marker at ${path} (no API keys, projectId omitted)`);
+    } catch (e) {
+      console.error("DoNow MCP: Failed to auto-generate local marker file:", e);
+    }
+    return;
+  }
+
+  try {
+    console.error("DoNow MCP: No project.json found. Auto-generating project on backend...");
+    const result: any = await callDoNowApi("donow_find_or_create_project", {
+      project: {
+        name: CURRENT_PROJECT.name,
+        externalId: CURRENT_PROJECT.externalId,
+        repoPath: CURRENT_PROJECT.repoPath,
+        branch: CURRENT_PROJECT.branch,
+        source: "mcp",
+      },
+    });
+
+    const project = result?.project || {};
+    const projectId = project.id;
+    const projectName = project.name || CURRENT_PROJECT.name;
+    const externalId = project.externalId || CURRENT_PROJECT.externalId;
+
+    if (projectId) {
+      const path = writeMarker(CURRENT_PROJECT.repoPath, {
+        projectId,
+        externalId,
+        name: projectName,
+      });
+      // Refresh CURRENT_PROJECT details
+      CURRENT_PROJECT.projectId = projectId;
+      CURRENT_PROJECT.name = projectName;
+      CURRENT_PROJECT.externalId = externalId;
+      CURRENT_PROJECT.markerPath = path;
+      CURRENT_PROJECT.source = "marker";
+      console.error(`DoNow MCP: Successfully auto-generated project marker at ${path} (projectId=${projectId})`);
+    }
+  } catch (error) {
+    console.error("DoNow MCP: Failed to auto-generate project marker via API:", error);
+    // Fallback to local-only generation
+    try {
+      const path = writeMarker(CURRENT_PROJECT.repoPath, {
+        externalId: CURRENT_PROJECT.externalId,
+        name: CURRENT_PROJECT.name,
+      });
+      CURRENT_PROJECT.markerPath = path;
+      CURRENT_PROJECT.source = "marker";
+      console.error(`DoNow MCP: Auto-generated local fallback marker at ${path}`);
+    } catch (e) {
+      console.error("DoNow MCP: Failed to auto-generate local fallback marker file:", e);
+    }
+  }
+}
+
 /**
  * Start the server using stdio transport
  */
 async function main() {
+  await autoGenerateMarkerIfNeeded();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("DoNow MCP Server running on stdio");
