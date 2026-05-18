@@ -11,6 +11,7 @@ import { dirname, basename, join } from "path";
 import { execSync } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
+import { homedir } from "os";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -52,8 +53,16 @@ function safeGit(cmd: string, cwd: string): string {
 }
 
 function findMarkerFile(startDir: string): string | null {
+  const home = homedir();
   let dir = startDir;
   for (let i = 0; i < 30; i++) {
+    if (dir === home) {
+      // Skip the global user home directory to avoid loading global markers
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+      continue;
+    }
     const candidate = join(dir, MARKER_DIR, MARKER_FILE);
     if (existsSync(candidate)) return candidate;
     const parent = dirname(dir);
@@ -78,8 +87,11 @@ function hashRepoId(idSource: string): string {
   return "repo:" + createHash("sha1").update(idSource).digest("hex").slice(0, 16);
 }
 
-function detectCurrentProject(): ProjectIdentity | null {
-  const cwd = process.env.DONOW_PROJECT_ROOT || process.cwd();
+function detectCurrentProject(overrideCwd?: string): ProjectIdentity | null {
+  const cwd = overrideCwd || process.env.DONOW_PROJECT_ROOT || process.cwd();
+  if (cwd === homedir() && !overrideCwd) {
+    return null;
+  }
   const topLevel = safeGit("git rev-parse --show-toplevel", cwd);
   const repoPath = topLevel || cwd;
   const remoteUrl = safeGit("git config --get remote.origin.url", repoPath) || null;
@@ -183,24 +195,25 @@ logCurrentProject();
  * Inject the detected project into task-related calls, unless the caller
  * already specified projectId or project.{name|externalId}.
  */
-function withProjectContext(args: any): any {
+function withProjectContext(args: any, overrideCwd?: string): any {
   const next = { ...(args || {}) };
-  if (!CURRENT_PROJECT) return next;
+  const currentProj = detectCurrentProject(overrideCwd);
+  if (!currentProj) return next;
   if (Object.prototype.hasOwnProperty.call(next, "projectId")) return next;
   const proj = next.project && typeof next.project === "object" ? next.project : null;
   if (proj && (proj.externalId || proj.name)) return next;
 
   // If marker file pinned an explicit projectId, prefer that (deterministic).
-  if (CURRENT_PROJECT.projectId) {
-    next.projectId = CURRENT_PROJECT.projectId;
+  if (currentProj.projectId) {
+    next.projectId = currentProj.projectId;
     return next;
   }
 
   next.project = {
-    name: CURRENT_PROJECT.name,
-    externalId: CURRENT_PROJECT.externalId,
-    repoPath: CURRENT_PROJECT.repoPath,
-    branch: CURRENT_PROJECT.branch,
+    name: currentProj.name,
+    externalId: currentProj.externalId,
+    repoPath: currentProj.repoPath,
+    branch: currentProj.branch,
     source: "mcp",
   };
   return next;
@@ -284,6 +297,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             status: { type: "string", enum: ["todo", "doing", "blocked", "done"] },
             completed: { type: "boolean" },
             tags: { type: "array", items: { type: "string" } },
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
           },
         },
       },
@@ -312,6 +326,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 externalId: { type: "string" },
               },
             },
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
           },
         },
       },
@@ -343,6 +358,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
                 externalId: { type: "string" },
               },
             },
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
           },
           required: ["tasks"],
         },
@@ -356,6 +372,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             task: { type: "object" },
             projectId: { type: "string" },
             project: { type: "object" },
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
           },
         },
       },
@@ -409,7 +426,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "Return the project automatically bound to the current working directory. Detection cascade: .donow/project.json marker file > DONOW_PROJECT_* env > git remote URL > git toplevel path > cwd. Use this to confirm which project tasks will be created in.",
         inputSchema: {
           type: "object",
-          properties: {},
+          properties: {
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
+          },
         },
       },
       {
@@ -420,6 +439,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             projectId: { type: "string", description: "Existing DoNow project id to bind to." },
             projectName: { type: "string", description: "Project name to find-or-create when projectId is not provided." },
+            cwd: { type: "string", description: "Current working directory / workspace path to dynamically resolve the bound project." },
           },
         },
       },
@@ -451,26 +471,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
  */
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const cwdArg = args && typeof args === "object" && "cwd" in args && typeof args.cwd === "string" ? args.cwd : undefined;
 
   try {
     if (name === "donow_get_current_project") {
+      const project = detectCurrentProject(cwdArg);
       return {
         content: [{
           type: "text",
-          text: CURRENT_PROJECT
-            ? JSON.stringify(CURRENT_PROJECT, null, 2)
+          text: project
+            ? JSON.stringify(project, null, 2)
             : "No project context detected. Tasks without an explicit project will go to the Inbox.",
         }],
       };
     }
 
     if (name === "donow_link_project") {
-      if (!CURRENT_PROJECT) {
+      const currentProj = detectCurrentProject(cwdArg);
+      if (!currentProj) {
         throw new Error("Cannot link: no repository context detected (no cwd / repoPath available).");
       }
       const linkArgs = (args || {}) as { projectId?: string; projectName?: string };
       let projectId = linkArgs.projectId;
-      let projectName = linkArgs.projectName || CURRENT_PROJECT.name;
+      let projectName = linkArgs.projectName || currentProj.name;
       let externalId: string | null = null;
 
       if (!projectId) {
@@ -478,30 +501,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const result: any = await callDoNowApi("donow_find_or_create_project", {
           project: {
             name: projectName,
-            externalId: CURRENT_PROJECT.externalId,
-            repoPath: CURRENT_PROJECT.repoPath,
-            branch: CURRENT_PROJECT.branch,
+            externalId: currentProj.externalId,
+            repoPath: currentProj.repoPath,
+            branch: currentProj.branch,
             source: "mcp",
           },
         });
         const project = result?.project || {};
         projectId = project.id;
         projectName = project.name || projectName;
-        externalId = project.externalId || CURRENT_PROJECT.externalId;
+        externalId = project.externalId || currentProj.externalId;
       }
 
       if (!projectId) {
         throw new Error("Failed to resolve a projectId to link.");
       }
 
-      const markerPath = writeMarker(CURRENT_PROJECT.repoPath, {
+      const markerPath = writeMarker(currentProj.repoPath, {
         projectId,
         externalId,
         name: projectName,
       });
 
       // Refresh detection so subsequent calls in this session use the new binding.
-      CURRENT_PROJECT = detectCurrentProject();
+      CURRENT_PROJECT = detectCurrentProject(cwdArg);
       logCurrentProject();
 
       return {
@@ -566,7 +589,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
     }
 
-    const finalArgs = PROJECT_SCOPED_ACTIONS.has(name) ? withProjectContext(args) : args;
+    const cleanArgs = { ...(args || {}) };
+    if ("cwd" in cleanArgs) {
+      delete cleanArgs.cwd;
+    }
+    const finalArgs = PROJECT_SCOPED_ACTIONS.has(name) ? withProjectContext(cleanArgs, cwdArg) : cleanArgs;
     const result = await callDoNowApi(name, finalArgs);
     return {
       content: [
@@ -592,6 +619,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function autoGenerateMarkerIfNeeded() {
   if (!CURRENT_PROJECT) return;
   if (CURRENT_PROJECT.markerPath) return; // Already has a marker file!
+  if (CURRENT_PROJECT.repoPath === homedir()) {
+    console.error("DoNow MCP: Skip auto-generating project marker for user home directory.");
+    return;
+  }
 
   if (!DONOW_API_KEY || !DONOW_USER_ID) {
     // Local-only fallback if no keys are provided
